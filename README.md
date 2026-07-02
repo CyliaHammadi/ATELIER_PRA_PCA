@@ -329,7 +329,58 @@ Difficulté : Moyenne (~2 heures)
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
+#### Runbook de restauration à un point choisi
 
+**Étape 1 — Lister les points de restauration disponibles**
+
+Lancer un pod de debug avec accès au volume pra-backup pour lister les 
+fichiers disponibles avec leur date :
+
+    kubectl -n pra run debug-backup --rm -it --image=alpine --overrides='...'
+    ls -lh /backup
+
+Noter le nom du fichier correspondant au point de restauration souhaité 
+(ex: app-1782983161.db), en choisissant selon l'horodatage présent dans 
+le nom du fichier.
+
+**Étape 2 — Mettre l'application hors service**
+
+Arrêter le pod Flask et suspendre le CronJob de sauvegarde, pour éviter tout 
+écriture concurrente pendant la restauration :
+
+    kubectl -n pra scale deployment flask --replicas=0
+    kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":true}}'
+
+**Étape 3 — Réinitialiser le volume de données**
+
+Supprimer et recréer le PVC pra-data pour repartir d'un état propre :
+
+    kubectl -n pra delete pvc pra-data
+    kubectl apply -f k8s/
+
+**Étape 4 — Lancer la restauration avec le fichier choisi**
+
+Modifier la valeur de RESTORE_FILE dans pra/50-job-restore.yaml avec le nom 
+du fichier noté à l'étape 1, puis appliquer le Job :
+
+    kubectl -n pra delete job sqlite-restore --ignore-not-found
+    kubectl apply -f pra/50-job-restore.yaml
+    kubectl -n pra logs job/sqlite-restore
+
+**Étape 5 — Remettre l'application en service**
+
+    kubectl -n pra scale deployment flask --replicas=1
+    kubectl -n pra patch cronjob sqlite-backup -p '{"spec":{"suspend":false}}'
+
+**Étape 6 — Vérifier la restauration**
+
+    kubectl -n pra port-forward svc/flask 8080:80 >/tmp/web.log 2>&1 &
+    curl http://localhost:8080/count
+    curl http://localhost:8080/consultation
+
+Le nombre et le contenu des messages doivent correspondre à l'état de la 
+base au moment précis du backup choisi à l'étape 1, et non au dernier backup 
+disponible
 
   
 ---------------------------------------------------
