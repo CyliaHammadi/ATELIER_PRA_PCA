@@ -231,27 +231,88 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+Le seul composant dont la perte entraîne une perte de données réelle et 
+irréversible est le PVC pra-data, qui héberge la base SQLite de production. 
+C'est l'unique source de vérité de l'application.
+
+Si pra-data ET pra-backup sont perdus simultanément 
+(panne du même disque physique ), la donnée est perdue sans recours.
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+Nous n'avons pas perdu les données car elles n'étaient pas stockées uniquement 
+dans pra-data. Le CronJob de sauvegarde, exécuté toutes les minutes, avait 
+déjà copié une version de la base SQLite vers le PVC pra-backup, un volume 
+distinct.
+
+Séquence de restauration :
+1. pra-data est supprimé -> la base de production disparaît
+2. Un nouveau PVC pra-data vide est recréé (kubectl apply -f k8s/)
+3. Le Job de restauration (pra/50-job-restore.yaml) va chercher le dernier fichier .db présent 
+   dans pra-backup et le copie dans le nouveau pra-data
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+RPO (Recovery Point Objective) ≈ 1 minute
+Le CronJob s'exécute toutes les minutes. En cas de sinistre survenant juste 
+avant l'exécution du prochain backup, on perd au maximum les données saisies 
+durant la dernière minute d'activité.
+
+RTO (Recovery Time Objective) ≈ 3 à 10 minutes
+Le RTO correspond au temps nécessaire pour exécuter manuellement la procédure 
+de restauration complète : recréation des manifests Kubernetes, attente du 
+redémarrage du pod, exécution du Job de restauration, relance du CronJob de 
+sauvegarde, puis vérification manuelle du bon fonctionnement.
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+1. Absence de réplication géographique : pra-data et pra-backup sont sur le 
+   même nœud/disque physique (cluster k3d local). Une panne de ce disque 
+   ferait perdre les deux volumes simultanément.
+2. SQLite n'est pas conçu pour la haute disponibilité : fichier unique, pas 
+   de réplication native, pas de failover automatique.
+3. Restauration manuelle : la procédure nécessite une intervention humaine. 
+   Aucune détection ni restauration automatique.
+4. Aucun monitoring/alerting : rien ne prévient si un backup échoue ou si le 
+   CronJob s'arrête de fonctionner.
+5. RPO d'1 minute potentiellement insuffisant selon la criticité de 
+   l'application.
+6. Cluster k3d local mono-machine : aucune haute disponibilité du control 
+   plane, pas de zones de disponibilité multiples.
+7. Aucun test de restauration automatisé et régulier pour valider que la 
+   procédure fonctionne réellement avant qu'un vrai sinistre survienne.
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Base de données : Remplacer SQLite par PostgreSQL avec réplication 
+primaire/secondaire, ou utiliser un service managé (AWS RDS Multi-AZ, Azure 
+Database, GCP Cloud SQL) avec failover automatique.
+
+Stockage : Utiliser un stockage répliqué géographiquement (Ceph, Longhorn, 
+ou EBS avec snapshots cross-region). Stocker les backups sur un stockage 
+objet externe (S3, MinIO) plutôt que sur un second PVC du même cluster, pour 
+éviter la perte simultanée des deux volumes.
+
+Cluster Kubernetes : Cluster multi-nœuds réel réparti sur plusieurs zones de 
+disponibilité, avec control plane en haute disponibilité (3 masters minimum).
+
+Automatisation de la reprise : Utiliser un outil comme Velero pour 
+automatiser sauvegardes ET restaurations de volumes persistants, avec tests 
+de restauration planifiés automatiquement.
+
+Supervision : Monitoring (Prometheus + Grafana) avec alertes sur échec du 
+CronJob, âge du dernier backup trop ancien, ou PVC proche de la saturation. 
+Logs centralisés (Loki, ELK) pour l'audit.
+
+Réduction du RPO/RTO : RPO quasi nul via réplication synchrone de la base. 
+RTO réduit via failover automatique du service sans intervention humaine.
+
+Tests réguliers : Pour valider en continu la procédure 
+de PRA.
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
@@ -263,13 +324,13 @@ Difficulté : Moyenne (~2 heures)
 * last_backup_file : nom du dernier backup présent dans /backup
 * backup_age_seconds : âge du dernier backup
 
-*..**Déposez ici une copie d'écran** de votre réussite..*
+![Résultat route /status](./status-screenshot.jpg)
 
 ---------------------------------------------------
 ### **Atelier 2 : Choisir notre point de restauration**  
 Aujourd’hui nous restaurobs “le dernier backup”. Nous souhaitons **ajouter la capacité de choisir un point de restauration**.
 
-*..Décrir ici votre procédure de restauration (votre runbook)..*  
+
   
 ---------------------------------------------------
 Evaluation
